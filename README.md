@@ -30,11 +30,112 @@ run_pet_ai.bat          <- the good one
 run_pet.bat             <- original, unchanged
 ```
 
+Either launcher asks **hooded or unhooded** on startup before anything loads. Both
+sheets are the same 7 animations × 6 frames with the same timings, so it is purely
+which sprite you look at:
+
+```
+Supreme Calamitas -- which sprite?
+  [h] hooded     the sprite the game swaps in for the fight
+  [u] unhooded   hood off, as in the downed sprite
+hooded [h]:
+```
+
+`h`/`1`/`hooded` or `u`/`2`/`unhooded`; Enter takes the default (hooded). To skip
+the prompt — a shortcut, a scheduled task, anything non-interactive — pass the
+flag, which both `.bat` files forward:
+
+```
+run_pet_ai.bat --variant unhooded     # or --variant=unhooded / --unhooded
+```
+
+With no console to ask on (piped stdin, a service, a test that just imports the
+module) it takes the hooded default instead of blocking on `input()`.
+
+`run_pet_ai.bat` then asks a second question, because only the ported AI has
+anything to adjust:
+
+```
+Supreme Calamitas -- which AI?
+  [f] faithful    the Calamity Mod source as written, aimed at your cursor
+  [d] desktop     same AI, tuned for a desktop screen
+faithful [f]:
+```
+
+`f`/`1`/`faithful` (or `mod`) or `d`/`2`/`desktop`; Enter takes faithful. Skip it
+the same way:
+
+```
+run_pet_ai.bat --ai desktop             # or --ai=desktop / --desktop
+run_pet_ai.bat --variant unhooded --ai desktop    # both questions, both flagged
+```
+
+Both questions read the same command line and ignore each other's flags, and
+with no console both fall back to their defaults (hooded, faithful). See "Which
+AI" below for what `desktop` actually changes.
+
 `calamitas_pet_ai.py` carries its own provenance notes in its module docstring:
 per-constant citations back to the mod source, the couplings that were resolved
 to constants, and every place a value is invented rather than ported. No separate
 upstream copy of the AI is bundled; the citations in that docstring are the
 record of what came from where.
+
+## Which AI
+
+`AI_MODE` picks between two builds of the same fight. It is a startup question
+(`calamitas_variant.choose_ai`, or `--ai`), and each deviation from the source
+lives behind `if self.ai_mode == AI_DESKTOP` with its own comment, so the
+faithful path is still a readable port.
+
+| | `faithful` (default) | `desktop` |
+| --- | --- | --- |
+| Attack selection, timings, cooldowns, `phaseChange` table | source | source |
+| Projectile speeds, lifetimes, homing, steering | source | source |
+| Movement, hover, dash, shield, forcefield | source | source |
+| **BH1 spawn positions** | **source: off the cursor, 1000 px** | **off the screen, its own size** |
+
+**Why BH1 needed it.** The opening bullet hell (`SupremeCalamitas.cs:1075-1115`)
+spawns every shot at `player.Center` plus a **1000 px** offset, with a random
+**1000 px** jitter on the other axis: the rain from above, the pair from left and
+right, and the horizontal sweep. Both numbers are the same 1000 px, and both
+assume the player roams an arena far wider than a screen — so from wherever the
+player stands, 1000 px is off the edge. On a desktop the player *is* the cursor,
+it is fixed, and 1000 px is roughly half a 1080p screen — so the shots land inside
+the desktop. Park the cursor on the left and the left/right pair appears in the
+middle of the window; park it at the bottom and the rain from above materialises
+overhead, already halfway to you. Measured at 1920×1080 with the gate held open,
+**300–730 of every 1820 shots spawn on screen** in `faithful`, from every cursor
+position tested.
+
+`desktop` does not re-author those spawn lines, it re-dials their three numbers
+onto the screen. On a desktop the screen *is* the arena, so:
+
+| source | `desktop` | on 1920×1080 |
+| --- | --- | --- |
+| `player.Center` | the middle of the screen | 960, 540 |
+| the `1000 px` offset | half the long side, plus `_BH_EDGE` (96 px) | 1056 px |
+| the `±1000 px` jitter | the screen's own half width / half height | ±960 / ±540 |
+
+1056 px is very nearly the source's own 1000 — the number was never special, it
+was just the mod's idea of "off the edge". Everything else is the source's line
+for line: the gate, the cadence, the per-window counts (43 / 83 / 117 over ticks
+1-300 / 301-600 / 601-900), the directions, the speeds, and the per-shot jitter
+(each shot draws its own, so the left and right pair are *not* a mirror image of
+each other).
+
+The sweep on `c2 % 48 == 0` is the one spawn that shares an axis with the cursor —
+the source aims it down `player.Center.Y` — so it keeps the cursor's row on
+purpose; only its x moved, to just outside the side it enters from, and it now
+crosses the whole screen instead of stopping 1000 px in.
+
+This is meant to be extended: anything else the AI assumes a moving,
+arena-sized player for belongs in the same branch, not in the port.
+
+`test_ai_mode.py` checks both modes: that `faithful` still reproduces the
+on-screen spawns (so the port cannot be quietly "fixed"), that `desktop` spawns
+nothing on screen from any cursor position, that the two streams contain the same
+shots at the same speeds in the same windows, and that shots leaving together are
+never mirrored onto one line.
 
 ## Changes made to the ported AI
 
@@ -48,6 +149,10 @@ Two, and both are presentation flags rather than behaviour changes:
 
 No behaviour was retuned. Speeds, lifetimes, cadences, cooldowns and the
 `phaseChange` table are untouched.
+
+The one behaviour change is opt-in and has its own section: **"Which AI"** above
+adds `AI_MODE`, whose `desktop` answer moves the opening bullet hell's spawn
+positions offscreen. The default is `faithful`, which is the port, unchanged.
 
 ## Later change: real per-pixel alpha
 
@@ -95,6 +200,10 @@ All four windowed/simulation tests currently pass for **both** implementations.
 
 `test_vfx_stamp.py` is AI-version only and takes no `CALAMITAS_MODULE`: it tests
 `calamitas_vfx.py` directly, plus one integration run through the ported-AI pet.
+
+`test_ai_mode.py` is also AI-version only and takes no `CALAMITAS_MODULE`: it runs
+both `AI_MODE` answers against each other (see "Which AI"), plus the startup
+question's command-line handling. No window, no audio.
 
 No install needed — it uses only the Python standard library plus `numpy` and
 `Pillow`, which you already have. (`pygame` has no wheel for Python 3.14, so the
@@ -169,6 +278,9 @@ the desktop and reading the result back — max error 0.5/255.
 - She hovers and bobs toward your cursor, switching to the taller hover pose
   when she moves fast
 - Six attacks on independent cooldowns, all aimed at your cursor
+- The opening bullet hell, which enters from offscreen and rains across the
+  screen instead of from wherever your cursor happens to be (ported AI version,
+  `--ai desktop`; see "Which AI")
 - Her shield goes up during the dash
 - A real forcefield sphere around her, from the mod's own shader
 - Projectile and casting particles — sparks, glow orbs, detonation blooms, the
@@ -374,7 +486,8 @@ Every asset was verified byte-identical against `CalamityModPublic` branch
 
 | Asset in this repo | Upstream path in the mod | Notes |
 | --- | --- | --- |
-| `assets/frames/SupremeCalamitasHooded/**` (42 PNGs) | `NPCs/SupremeCalamitas/SupremeCalamitasHooded.png` | Cropped from the 120×1302 sheet into 7 animations × 6 frames. Verified pixel-exact against the sheet. |
+| `assets/frames/SupremeCalamitasHooded/**` (42 PNGs) | `NPCs/SupremeCalamitas/SupremeCalamitasHooded.png` | Cropped from the 120×1302 sheet into 7 animations × 6 frames. Verified pixel-exact against the sheet. Default sprite. |
+| `assets/frames/SupremeCalamitas/**` (42 PNGs) | `NPCs/SupremeCalamitas/SupremeCalamitas.png` | The unhooded sheet, same slicing: 120×1260, 2 cols × 21 rows, 60×60 cells, 42 cells. Selectable at startup. |
 | `assets/sprites/SupremeShieldTop.png`, `SupremeShieldBottom.png` | `NPCs/SupremeCalamitas/SupremeShield{Top,Bottom}.png` | Unmodified |
 | `assets/sprites/BrimstoneBarrage.png` | `Projectiles/Boss/BrimstoneBarrage.png` | Unmodified |
 | `assets/sprites/BrimstoneWave.png` | `Projectiles/Boss/BrimstoneWave.png` | Unmodified |
@@ -445,13 +558,26 @@ ffmpeg -i assets\sfx\BrimstoneShoot.ogg -c:a pcm_s16le -ar 44100 -ac 1 assets\sf
 
 ### Which sheet she is cut from
 
-The body uses the **Hooded** sheet, which is what the game swaps in for the
+The body defaults to the **Hooded** sheet, which is what the game swaps in for the
 actual fight (per `PreDraw`:
 `DownedBossSystem.downedCalamitas ? NpcTexture : HoodedTexture`). The cell
 layout above comes from `SupremeCalamitas.cs`: `Main.npcFrameCount[Type] = 21`
 rows, `frameCounter %= 6` frames per animation, and
 `frame.Y = frameCounter + FrameType * 6`, giving 42 cells = 7 animations × 6
 frames, matching `enum FrameAnimationType { ... Count = 7 }`.
+
+The **unhooded** `SupremeCalamitas.png` sheet is sliced identically (120×1260,
+2 cols × 21 rows, 60×60 cells) and ships alongside it as
+`assets/frames/SupremeCalamitas/`, so you can run her without the hood. Only the
+crop box differs — one shared box per animation, so the sprite cannot jitter
+between frames — and the unhooded cells are 2px shorter (50 vs 52, 60 vs 62 for
+Casting), which is why her sprite reads slightly smaller; the forcefield sphere is
+sized off the loaded sprite height, so it follows her either way.
+
+`calamitas_variant.py` owns both prompts and their flags (`--variant`, `--ai`);
+both pet modules guard the import, so deleting it leaves them on the hooded sheet
+and the faithful AI with no prompt. `choose()` is called by both pets, `choose_ai()`
+only by `calamitas_pet_ai.py` — the original pet has no ported AI to adjust.
 
 ## Timings
 
@@ -481,14 +607,17 @@ desktop_pet/
   run_pet.bat          launcher for the original
   calamitas_forcefield.py  SupremeShieldShader.fx ported to numpy (AI version only)
   calamitas_vfx.py         projectile + casting particles  (AI version only)
+  calamitas_variant.py     startup prompts: body sheet (both) and AI mode (AI version)
   ulw_probe.py         standalone UpdateLayeredWindow diagnostic (see above)
   test_headless.py     simulation tests (no window)
   test_vfx_stamp.py    VFX stamp/draw regression tests (no window)
+  test_ai_mode.py      AI_FAITHFUL vs AI_DESKTOP, and the --ai flag (no window)
   test_present.py      per-frame presentation check
   test_on_screen.py    desktop read-back visibility check
   test_full_run.py     full run + on-screen captures
   assets/
-    frames/SupremeCalamitasHooded/   7 animations x 6 frames
+    frames/SupremeCalamitasHooded/   7 animations x 6 frames (default)
+    frames/SupremeCalamitas/          same slicing, hood off
     sprites/                          projectiles + shield
     sfx/                              WAV conversions of her sounds
     shaders/                          forcefield shader + texture, and reference/
@@ -505,6 +634,7 @@ original pet does not import it.
 ```powershell
 python test_headless.py     # 90s of simulation, no window
 python test_vfx_stamp.py    # VFX stamp/draw regression tests (~2 min)
+python test_ai_mode.py      # AI_FAITHFUL vs AI_DESKTOP, and the --ai flag
 python test_present.py      # does every frame actually reach the screen?
 python test_on_screen.py    # reads the desktop back; is she really visible?
 python test_full_run.py     # full run with attacks, saves on-screen captures
@@ -537,6 +667,14 @@ showing through behind her.
 `test_on_screen.py` no longer filters by key colour — there isn't one. It grabs
 the bare desktop first as a baseline, then diffs against it, so "something we
 drew is actually there" is measured rather than assumed.
+
+`test_ai_mode.py` is the guard on the AI mode choice: it runs the opening bullet
+hell's spawn stream in both modes from seven cursor positions, and asserts that
+`faithful` still spawns shots on screen (300-730 of 1820 — the port, not a fix),
+that `desktop` spawns none and waits `_BH_EDGE` outside its entry edge, that both
+streams are the same shots at the same speeds in the same three windows, that the
+cursor-lane sweep keeps the cursor's row, that shots leaving together are never
+mirrored onto one line, and that a 90-second fight runs in each.
 
 ## Notes
 

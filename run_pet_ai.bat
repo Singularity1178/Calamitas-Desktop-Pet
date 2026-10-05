@@ -7,6 +7,11 @@ REM  and the per-constant citations.
 REM
 REM  Press ESC to quit.
 REM
+REM  Asks hooded / unhooded on startup; pass --variant hooded|unhooded to skip that.
+REM  Then asks which AI: faithful (the mod source) or desktop (same AI, with the
+REM  opening bullet hell entering from offscreen instead of from the cursor).
+REM  Pass --ai faithful|desktop (or --desktop) to skip that one.
+REM
 REM  The original hand-built pet is untouched: run_pet.bat still starts it.
 REM ---------------------------------------------------------------------------
 cd /d "%~dp0"

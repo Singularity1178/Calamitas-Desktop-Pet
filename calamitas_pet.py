@@ -4,6 +4,8 @@ Calamitas desktop pet -- a stand-alone boss fight on your desktop.
 Uses the official Calamity Mod (v1.4.4) assets and timings:
 
   * SupremeCalamitasHooded.png   -> the sprite used in the real fight
+                                    (or SupremeCalamitas.png, unhooded --
+                                    asked for at startup, or --variant)
   * SCalSounds/*.ogg             -> her sound effects (converted to WAV)
   * frame durations              -> FrameChangeSpeed from SupremeCalamitas.cs
 
@@ -41,7 +43,12 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPR = os.path.join(HERE, "assets", "sprites")
 SFX = os.path.join(HERE, "assets", "sfx")
-FRM = os.path.join(HERE, "assets", "frames", "SupremeCalamitasHooded")
+FRM_ROOT = os.path.join(HERE, "assets", "frames")
+# Which body sheet she is cut from: the Hooded sheet (what the game swaps in for
+# the fight) or the plain unhooded one. Same 7 animations x 6 frames either way,
+# so this is presentation only -- chosen in main(), or --variant on the command line.
+BODY_SHEET = "SupremeCalamitasHooded"
+FRM = os.path.join(FRM_ROOT, BODY_SHEET)
 
 SCALE = 4
 FPS = 60
@@ -815,6 +822,18 @@ def main():
             except ValueError:
                 shot_at = 5.0
 
+    # Asked before anything is loaded: which sprite sheet, hooded or unhooded.
+    # Without a console (piped, a service, a test importing this module) the
+    # helper falls back to hooded instead of blocking on input().
+    global FRM, BODY_SHEET
+    try:
+        import calamitas_variant
+    except Exception:  # file missing -> hooded, never prompt
+        pass
+    else:
+        BODY_SHEET = calamitas_variant.choose(sys.argv[1:])
+        FRM = os.path.join(FRM_ROOT, BODY_SHEET)
+
     if not os.path.isdir(FRM):
         print(f"missing frames at {FRM}")
         return 1
@@ -825,6 +844,7 @@ def main():
 
     diag = win.diagnostics()
     print(f"Calamitas desktop pet -- {win.w}x{win.h}, SCALE={SCALE}, ESC to quit")
+    print(f"body sprite sheet: {BODY_SHEET}")
     print(f"window visible={diag['visible']}  exstyle={diag['exstyle']}")
     print("pre-brothers moveset only (no Sepulcher, no brothers, no Permafrost phase)")
     if verbose:

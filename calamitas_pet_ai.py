@@ -27,6 +27,10 @@ PROVENANCE NOTES (the file carries its own write-up)
 * Forcefield shader: ported in calamitas_forcefield.py. Dust, sparks, blooms, pulse rings and afterimages:
   ported in calamitas_vfx.py now that the window has real per-pixel alpha; see that module's PROVENANCE
   NOTES for sources, substitutes and gaps. [vfx-patch v1]
+* AI mode (startup question / --ai): AI_FAITHFUL is the source, cursor and all. AI_DESKTOP is the same
+  fight with the AI's desktop-unfriendly assumptions replaced -- currently only the BH1 spawn positions,
+  which the source hangs off the player and which therefore land on screen (see _bh1_desktop). Everything
+  else is byte-identical, and each deviation is commented where it is taken. [ai-mode v1]
 """
 import ctypes
 import io
@@ -80,6 +84,22 @@ HERE = Path(__file__).resolve().parent
 SPR = HERE / "assets" / "sprites"
 SFX = HERE / "assets" / "sfx"
 FRM = HERE / "assets" / "frames"
+# Which body sheet she is cut from: the Hooded sheet (what the game swaps in for
+# the fight) or the plain unhooded one. Same 7 animations x 6 frames either way,
+# so this is presentation only -- chosen in main(), or --variant on the command line.
+BODY_SHEET = "SupremeCalamitasHooded"
+
+# How her AI behaves. [ai-mode v1]
+#   AI_FAITHFUL -- the mod source as written: the cursor stands in for the player and every spawn
+#                  point is derived from it, exactly as SupremeCalamitas.cs does.
+#   AI_DESKTOP  -- the same AI with the parts that assume a moving, arena-sized player re-aimed at
+#                  the desktop. Chosen in main(), or --ai on the command line. Deviating code is
+#                  guarded by `if self.ai_mode == AI_DESKTOP` and says why in its own comment, so the
+#                  faithful path stays the default and stays readable as the port.
+AI_FAITHFUL = "faithful"
+AI_DESKTOP = "desktop"
+AI_MODES = (AI_FAITHFUL, AI_DESKTOP)
+AI_MODE = AI_FAITHFUL       # module default: the tests import this without asking anything
 
 # SupremeCalamitas.cs:~478 FrameChangeSpeed=0.15f, ~2680 0.175f, ~3210 0.245f; ms = 1000/(60*speed)
 ANIM_MS = {
@@ -113,6 +133,11 @@ _TPS = 60.0                  # Terraria fixed update rate -- engine constant, no
 _GAP = 1.0 / 60.0            # SupremeCalamitas.cs:~2190 `if (NPC.ai[1] == -1f)` selection tick: sets ai[1]=phase, attack branch NOT run -> 1 idle tick
 _UDIELUL = 1.0               # SupremeCalamitas.cs:~890 uDieLul stays 1 while the target is inside the arena (pet has no arena)
 _BH_GATE = 8                 # SupremeCalamitas.cs:~520 baseBulletHellProjectileGateValue = revenge ? 8 : expertMode ? 9 : 10 (revenge chosen: invented)
+# [ai-mode v1] AI_DESKTOP only: how far past the screen edge a BH1 shot waits before it shows up.
+# invented -- it is added to the spawn radius, so every shot is at least this far outside whichever
+# edge it enters. The only requirement is that a shot plus its sprite is fully outside the screen,
+# and BrimstoneHellblast2 draws 54x44 px (27x22 at SCALE * SPRITE_SHRINK), so 96 px is a wide berth.
+_BH_EDGE = 96.0
 _HOVER_ABOVE = 550.0         # SupremeCalamitas.cs:~2335 new Vector2(player.Center.X, player.Center.Y - 550f)
 _HOVER_VEL = 12.0            # SupremeCalamitas.cs:~2325 float velocity = 12f
 _HOVER_ACC = 0.12            # SupremeCalamitas.cs:~2326 float acceleration = 0.12f
@@ -981,11 +1006,14 @@ class Audio:
 # ----------------------------------------------------------------------------------------------
 class Anim:
     def __init__(self, folder_name, ms, loop=True):
-        paths = sorted(FRM.glob("SupremeCalamitasHooded/%s/*.png" % folder_name), key=_natural_key)
+        # BODY_SHEET is picked at startup (hooded / unhooded -- same animations,
+        # same timings). Without it the old "*/<anim>/*.png" glob would mix the
+        # two sheets together.
+        paths = sorted(FRM.glob("%s/%s/*.png" % (BODY_SHEET, folder_name)), key=_natural_key)
         if not paths:
-            paths = sorted(FRM.glob("*/%s/*.png" % folder_name), key=_natural_key)
+            paths = sorted(FRM.glob("SupremeCalamitasHooded/%s/*.png" % folder_name), key=_natural_key)
         if not paths:
-            raise FileNotFoundError("no frames for %r under %s" % (folder_name, FRM))
+            raise FileNotFoundError("no frames for %r under %s/%s" % (folder_name, FRM, BODY_SHEET))
         self.name = folder_name
         self.ms = float(ms)
         self.loop = bool(loop)
@@ -1172,10 +1200,14 @@ class Projectile:
 # Calamitas
 # ----------------------------------------------------------------------------------------------
 class Calamitas:
-    def __init__(self, w, h, audio):
+    def __init__(self, w, h, audio, ai_mode=None):
         self.w = int(w)
         self.h = int(h)
         self.audio = audio
+        # [ai-mode v1] AI_FAITHFUL (default) or AI_DESKTOP. Read once here so every tick is a plain
+        # attribute compare rather than a module global, and so a test can run both modes side by side.
+        # ai_mode=None means "whatever the module default is", i.e. the source.
+        self.ai_mode = AI_MODE if ai_mode is None else str(ai_mode)
         # World scale: source distances/speeds are authored for ~1080p; scale so the 550px hover is half the
         # smaller screen side. invented -- presentation only.
         self.k = max(0.25, min(2.0, 0.5 * min(self.w, self.h) / _HOVER_ABOVE))
@@ -1512,6 +1544,11 @@ class Calamitas:
         if self._bh_counter < _BH_GATE:
             return
         self._bh_counter = 0
+        if self.ai_mode == AI_DESKTOP:
+            # [ai-mode v1] Same gate, cadence, counts and velocities, entered from offscreen instead
+            # of from the cursor. Set AI_MODE back to AI_FAITHFUL for the source positions.
+            self._bh1_desktop(c2)
+            return
         k, rnd, px, py, U = self.k, self._rng, self.cx, self.cy, _UDIELUL
         n = "BrimstoneHellblast2"
         if c2 % (_BH_GATE * 6) == 0:     # horizontal blast
@@ -1526,6 +1563,61 @@ class Calamitas:
             self._raw_shot(n, px + rnd.randint(-1000, 1000) * k, py - 1000 * k, 0.0, 3.0 * U)
             self._raw_shot(n, px + 1000 * k, py + rnd.randint(-1000, 1000) * k, -3.0 * U, 0.0)
             self._raw_shot(n, px - 1000 * k, py + rnd.randint(-1000, 1000) * k, 3.0 * U, 0.0)
+
+    # [ai-mode v1] The desktop-adjusted BH1 stream. Same gate, cadence, counts, speeds and jitter as
+    # _bh1_stream, line for line; only the anchor and the radius are different numbers.
+    def _bh1_desktop(self, c2):
+        """BH1 with the source's radius mapped onto the screen.
+
+        The source spawns every BH1 shot at `player.Center` plus a 1000 px offset, with a random
+        1000 px jitter on the other axis (SupremeCalamitas.cs:~1080-1113:
+        `player.Center.X + 1000f, player.Center.Y + Main.rand.Next(-1000, 1001)`, the
+        `player.Center.Y - 1000f` rain, and so on). Both numbers are the same 1000 px, and both assume
+        the player roams an arena far wider than a screen -- so from wherever the player happens to
+        stand, 1000 px is off the edge. A desktop has no arena: the cursor is the player's center, it
+        is fixed, and 1000 px is about half a 1080p screen, so the shots land *inside* the desktop
+        instead of entering it.
+
+        Nothing about the fight is wrong, only the reference point. On a desktop the screen is the
+        arena, so the three numbers map straight across:
+
+            player.Center         -> the middle of the screen
+            the 1000 px offset    -> half the long side, plus _BH_EDGE so it clears every edge
+            the +-1000 px jitter  -> the screen's own half width / half height
+
+        A 16:9 1080p screen therefore gets a 1056 px radius and a +-960 / +-540 jitter, which is very
+        nearly the source's own 1000 px -- the numbers were never special, they were just the mod's
+        idea of "off the edge". The jitter stays per shot, as in the source, so the left and right
+        pair fire along their own rows rather than mirroring each other.
+
+        The extra horizontal sweep (`c2 % (_BH_GATE * 6) == 0`) is the one spawn that shares an axis
+        with the cursor: the source aims it down `player.Center.Y`, so it keeps the cursor's row on
+        purpose. Only its x moves, from `cursor.X +- 1000 px` to just outside the side it enters from,
+        and it now crosses the whole screen instead of stopping 1000 px in.
+        """
+        rnd, U = self._rng, _UDIELUL
+        # The source's three numbers, mapped onto the screen:
+        px, py = self.w / 2.0, self.h / 2.0          # player.Center  -> the middle of the screen
+        r = 0.5 * max(self.w, self.h) + _BH_EDGE     # the 1000 px offset -> half the long side, plus
+                                                      # the margin that keeps it offscreen
+        hw, hh = 0.5 * self.w, 0.5 * self.h          # the +-1000 px jitter -> the screen's own half
+                                                      # width and half height, so the stream is spread
+                                                      # evenly over the desktop instead of around a point
+        n = "BrimstoneHellblast2"
+        if c2 % (_BH_GATE * 6) == 0:     # horizontal blast: keeps the cursor's row (see above)
+            if rnd.random() < 0.5:
+                self._raw_shot(n, px - r, self.cy, 4.0 * U, 0.0)
+            else:
+                self._raw_shot(n, px + r, self.cy, -4.0 * U, 0.0)
+        if c2 < 300:                     # from above
+            self._raw_shot(n, rnd.uniform(px - hw, px + hw), py - r, 0.0, 4.0 * U)
+        elif c2 < 600:                   # from left and right -- a jitter each, as in the source
+            self._raw_shot(n, px + r, rnd.uniform(py - hh, py + hh), -3.5 * U, 0.0)
+            self._raw_shot(n, px - r, rnd.uniform(py - hh, py + hh), 3.5 * U, 0.0)
+        else:                            # above, left and right
+            self._raw_shot(n, rnd.uniform(px - hw, px + hw), py - r, 0.0, 3.0 * U)
+            self._raw_shot(n, px + r, rnd.uniform(py - hh, py + hh), -3.0 * U, 0.0)
+            self._raw_shot(n, px - r, rnd.uniform(py - hh, py + hh), 3.0 * U, 0.0)
 
     def _on_projectile_death(self, p):
         sfx = _IMPACT_SFX.get(p.name)
@@ -1701,6 +1793,25 @@ if VFX_ENABLED and VFX_SILENCE_STANDIN_DISC and calamitas_vfx is not None and "_
 
 
 def main():
+    global BODY_SHEET, AI_MODE
+    # Asked before anything is loaded: which sprite sheet (hooded or unhooded), and how her AI
+    # behaves (the mod source, or the desktop-adjusted one). Without a console (piped, a service, a
+    # test importing this module) the helper falls back to its defaults instead of blocking on input().
+    try:
+        import calamitas_variant
+    except Exception:  # file missing -> hooded + faithful, never prompt
+        pass
+    else:
+        BODY_SHEET = calamitas_variant.choose(sys.argv[1:])
+        # [ai-mode v1] The AI pet is the only one that asks this: the original pet has no ported AI
+        # to adjust. Keep both in sync if you port anything else over.
+        AI_MODE = calamitas_variant.choose_ai(sys.argv[1:])
+
+    sheet_dir = FRM / BODY_SHEET
+    if not sheet_dir.is_dir():
+        print("missing body frames at %s" % sheet_dir)
+        return 1
+
     try:
         win = LayeredWindow()
     except Exception as exc:
@@ -1708,7 +1819,7 @@ def main():
         return 1
     audio = Audio()
     try:
-        cal = Calamitas(win.w, win.h, audio)
+        cal = Calamitas(win.w, win.h, audio, ai_mode=AI_MODE)
     except Exception as exc:
         print("could not load assets:", exc)
         win.close()
