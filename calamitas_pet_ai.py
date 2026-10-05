@@ -63,7 +63,18 @@ except ImportError:  # non-Windows (headless tests of blit etc.)
 SRCCOPY = 0x00CC0020        # Win32 raster op, used by the tests to read the desktop back
 SCALE = 2                   # invented -- presentation only
 FPS = 60                    # invented -- presentation only (matches Terraria's 60 UPS)
-
+# How much of SCALE the sprite art is actually drawn at: she and her projectiles are drawn at
+# SCALE * SPRITE_SHRINK, so 1.0 is the old size and 0.5 puts every sprite at its native 1:1 resolution.
+# invented -- presentation only, like SCALE.
+#
+# Why a separate knob instead of lowering SCALE: SCALE sizes only sprite art. Distances, speeds, detonation
+# ranges and the whole calamitas_vfx particle layer are in world units and follow `k` (which follows the screen
+# size), and the forcefield sphere is sized from her sprite height (_FF_VS_SPRITE) but is deliberately held at
+# its old pixel size -- see _forcefield_step. Shrinking every sprite by one factor therefore shrinks her and her
+# projectiles by exactly that factor, keeps sprite-to-sprite proportions identical to the game's (they all scale
+# together), leaves the arena and the fight geometry alone, and leaves room to spare inside the sphere -- in game
+# the 216px sphere is ~4.15x her 52px sprite height (_FF_VS_SPRITE is 1.55x, so the sphere reads much tighter here).
+SPRITE_SHRINK = 0.5
 
 HERE = Path(__file__).resolve().parent
 SPR = HERE / "assets" / "sprites"
@@ -450,16 +461,33 @@ def _make_forcefield(w, h):
 # Image helpers
 # ----------------------------------------------------------------------------------------------
 _NEAREST = getattr(getattr(Image, "Resampling", Image), "NEAREST")
+_BOX = getattr(getattr(Image, "Resampling", Image), "BOX")
 
 
-def scaled(path, scale=SCALE):
+def _fit(im, shrink):
+    """Shrink an RGBA sprite by `shrink` (1.0 = unchanged).
+
+    The integer SCALE step above stays NEAREST so the pixel art keeps its hard edges; this second step is a
+    fractional downscale, so it uses BOX (a plain area average) -- averaging every source pixel into the output
+    cell keeps the sprite's brightness and avoids the shimmer NEAREST produces on a non-integer factor. At
+    SPRITE_SHRINK = 0.5 the whole step collapses to SCALE * 0.5 = 1.0, i.e. no resampling at all.
+    """
+    if shrink == 1.0:
+        return im
+    return im.resize((max(1, round(im.width * shrink)), max(1, round(im.height * shrink))), _BOX)
+
+
+def scaled(path, scale=SCALE, shrink=None):
+    # shrink=None resolves SPRITE_SHRINK at call time (a default argument would freeze the value at import)
+    shrink = SPRITE_SHRINK if shrink is None else shrink
     im = Image.open(path).convert("RGBA")
     if scale != 1:
         im = im.resize((im.width * scale, im.height * scale), _NEAREST)
-    return np.array(im, dtype=np.uint8)
+    return np.array(_fit(im, shrink), dtype=np.uint8)
 
 
-def strip_frames(path, n_frames, scale=SCALE):
+def strip_frames(path, n_frames, scale=SCALE, shrink=None):
+    shrink = SPRITE_SHRINK if shrink is None else shrink
     im = Image.open(path).convert("RGBA")
     fh = im.height // n_frames
     out = []
@@ -467,7 +495,7 @@ def strip_frames(path, n_frames, scale=SCALE):
         crop = im.crop((0, i * fh, im.width, (i + 1) * fh))
         if scale != 1:
             crop = crop.resize((crop.width * scale, crop.height * scale), _NEAREST)
-        out.append(np.array(crop, dtype=np.uint8))
+        out.append(np.array(_fit(crop, shrink), dtype=np.uint8))
     return out
 
 
@@ -1541,7 +1569,9 @@ class Calamitas:
         if ff is not None:
             # `scale` must be set BEFORE update(): Forcefield.quad is derived in _refresh(), which
             # update() calls. Assigning it afterwards leaves the previous frame's quad in place.
-            h = self.anims[self.current].frame(self.facing_left).shape[0]
+            # h is her sprite height as it would be at SCALE * 1.0 (undo SPRITE_SHRINK), so the sphere keeps
+            # the exact pixel size it had before she was shrunk -- the sphere is not hers to shrink with her.
+            h = self.anims[self.current].frame(self.facing_left).shape[0] / SPRITE_SHRINK
             ff.scale = (_FF_VS_SPRITE * h) / 216.0
             ff.update(1.0 / FPS, {
                 "forcefieldScale": self.forcefield_scale,
@@ -1632,15 +1662,15 @@ class Calamitas:
             lo, hi, rate = _JAW_LAUGH
             jaw_off = lo + (hi - lo) * (math.sin(self.t * rate) * 0.5 + 0.5)
         flip_v = math.cos(rot) <= 0
-        px = self.x + math.cos(rot) * _SHIELD_FWD * SCALE
-        py = self.y + math.sin(rot) * _SHIELD_FWD * SCALE
+        px = self.x + math.cos(rot) * _SHIELD_FWD * SCALE * SPRITE_SHRINK
+        py = self.y + math.sin(rot) * _SHIELD_FWD * SCALE * SPRITE_SHRINK
         if flip_v:
             a = rot - math.pi / 2
         else:
             a = rot + math.pi / 2
             jaw_off = -jaw_off
-        jx = px + math.cos(a) * _JAW_OFF * SCALE
-        jy = py + math.sin(a) * _JAW_OFF * SCALE
+        jx = px + math.cos(a) * _JAW_OFF * SCALE * SPRITE_SHRINK
+        jy = py + math.sin(a) * _JAW_OFF * SCALE * SPRITE_SHRINK
         jaw = _orient(self.shield_bottom, rot + jaw_off, False, flip_v)
         skull = _orient(self.shield_top, rot, False, flip_v)
         blit(canvas, jaw, int(round(jx - jaw.shape[1] / 2)), int(round(jy - jaw.shape[0] / 2)))

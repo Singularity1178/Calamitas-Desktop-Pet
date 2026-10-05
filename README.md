@@ -38,11 +38,13 @@ record of what came from where.
 
 ## Changes made to the ported AI
 
-One, and it is a scope flag rather than a fix:
+Two, and both are presentation flags rather than behaviour changes:
 
 1. **`INCLUDE_POST_BROTHERS_STAGE` made explicit** (it was hardcoded as
-   `_STAGE2_FROM = 8`). See the scope note below — this is the one flag you may
+   `_STAGE2_FROM = 8`). See the scope note below — this is the flag you may
    want to flip.
+2. **`SPRITE_SHRINK` added** (`= 0.5`). She and her projectiles were too big
+   relative to the forcefield. See "Sprite size" below.
 
 No behaviour was retuned. Speeds, lifetimes, cadences, cooldowns and the
 `phaseChange` table are untouched.
@@ -89,7 +91,10 @@ $env:CALAMITAS_MODULE = "calamitas_pet_ai"; python test_headless.py   # ported A
 Remove-Item Env:\CALAMITAS_MODULE
 ```
 
-All four tests currently pass for **both** implementations.
+All four windowed/simulation tests currently pass for **both** implementations.
+
+`test_vfx_stamp.py` is AI-version only and takes no `CALAMITAS_MODULE`: it tests
+`calamitas_vfx.py` directly, plus one integration run through the ported-AI pet.
 
 No install needed — it uses only the Python standard library plus `numpy` and
 `Pillow`, which you already have. (`pygame` has no wheel for Python 3.14, so the
@@ -165,6 +170,10 @@ the desktop and reading the result back — max error 0.5/255.
   when she moves fast
 - Six attacks on independent cooldowns, all aimed at your cursor
 - Her shield goes up during the dash
+- A real forcefield sphere around her, from the mod's own shader
+- Projectile and casting particles — sparks, glow orbs, detonation blooms, the
+  bullethell pulse rings, and afterimages behind the barrage and hellblast
+  (ported AI version only)
 - Real sound effects
 - She is free to drift off the edge of the screen and come back
 
@@ -198,15 +207,114 @@ for the whole normal fight — it is only lowered at BH4 (`:1304`) and post-musi
 
 **Two mappings are invented**, because the shipped frames give us neither quantity:
 the C# quad is 216px against a 152.8px hitbox, but the pet has no hitbox, so the
-sphere is sized at `_FF_VS_SPRITE` (1.55) × her sprite height and follows `SCALE`
-with it; and the sphere is centred on `self.x/self.y`, which is already her body
-centre because `draw()` uses a centre anchor.
+sphere is sized at `_FF_VS_SPRITE` (1.55) × her sprite height; and the sphere is
+centred on `self.x/self.y`, which is already her body centre because `draw()` uses
+a centre anchor.
+
+**The sphere ignores `SPRITE_SHRINK`.** `_forcefield_step()` divides the measured
+sprite height back out (`shape[0] / SPRITE_SHRINK`) before applying
+`_FF_VS_SPRITE`, so shrinking her does not shrink the bubble with her. Verified:
+the quad holds at 192px (1080p) for `SPRITE_SHRINK` anywhere from 1.0 to 0.25.
 
 **Known limits.** The noise is a 1/f^1.5 FFT field, not Terraria's real Perlin, so
 the cloud pattern inside the rim will not match. `_CHARGE_MIX` (0.5) and the
 shimmer `intensity` mapping are invented. At `forcefieldScale = 0.45` the sphere is
 smaller than her sprite and hides behind her — which is what the original does too
 (62px bubble vs a 68.8px hitbox). Roughly 1.8 ms/frame at normal size.
+
+## Projectile and casting VFX
+
+`calamitas_vfx.py` ports her projectile and casting particles — the last piece of
+the fight that was still standing in as a flat procedural disc. It reads fight
+state and **never writes it**, and it uses its own `random.Random`, so attack
+selection, timings and the RNG streams are untouched.
+
+The port covers `Particles/*.cs` (Spark, Point, GlowOrb, Bloom,
+DirectionalPulseRing) and the OnKill/Spawn visuals of the five projectiles she
+uses. Details:
+
+- **Blending.** Every particle in the mod has `UseAdditiveBlend`, and tModLoader
+  premultiplies textures on load, so a texel adds
+  `tex.rgb * tex.a² * col.rgb * col.a`. Both `Color * f` (scales all four
+  channels) and `Color.Lerp(c, Transparent, t)` (fades A too) are kept, so fades
+  are quadratic exactly as in game.
+- **Timing.** Per the `Particle.cs` doc — velocity is added to position and time
+  increments before `update()`, so a particle is dropped when `time >= Lifetime`.
+  `ParticleLimit` is assumed to be the `CalamityConfig` default of 500.
+- **Mirrored state.** `Opacity`, `timeLeft` and `withinRange` are not exposed by
+  the pet, so they are rebuilt per projectile from that projectile's own AI
+  formulas plus this module's age counter and the cursor distance.
+- **The module is self-disabling.** Any exception inside `tick()`/`draw()` prints
+  the traceback and sets `self.ok = False`, which turns the whole layer off for
+  the session instead of spamming errors every frame. A missing or broken module
+  leaves `calamitas_vfx = None` and the pet runs exactly as it did before.
+
+**Substitutes, marked `SUBSTITUTE` in the source.** Vanilla dust textures do not
+exist here, so dust is a procedural 8×8 blob drawn additively, and its decay
+(`vel*0.92`, `scale-0.05`/tick) is written from memory of vanilla's noGravity
+torch-dust update. `Lighting.AddLight` and the lightColor G/B world-light
+channels have no equivalent and are dropped.
+
+**Known limits.** `GeneralParticleHandler.cs` was not read, so the particle limit
+is assumed rather than ported. The wave's `velocity.Y = 5 * sin(x / 5)` and the
+per-tick hand spray are reproduced, but nothing reads the mod's particle draw
+layer ordering beyond "dust, then particles, both after projectiles".
+
+## Sprite size
+
+`SPRITE_SHRINK` (`calamitas_pet_ai.py`) scales **sprite art only**:
+
+```python
+SCALE = 2                   # sprite upscale applied before the shrink
+SPRITE_SHRINK = 0.5         # 1.0 = the old size; 0.5 = native 1:1 resolution
+```
+
+Her frames, the shield skull/jaw and all six projectiles are drawn at
+`SCALE * SPRITE_SHRINK`. On a 1920×1080 screen:
+
+| | before | after |
+| --- | --- | --- |
+| Her sprite | 120×124 | 60×62 |
+| `BrimstoneBarrage` | 36×88 | 18×44 |
+| `SCalBrimstoneGigablast` | 104×164 | 52×82 |
+| Shield skull | 152×172 | 76×86 |
+| **Forcefield sphere** | **192 px** | **192 px** |
+
+She now fills ~32% of the sphere's height instead of ~65%. In game the 216px
+sphere is ~4.15× her 52px sprite height, and `SPRITE_SHRINK = 0.5` reproduces
+exactly that ratio.
+
+A separate knob rather than a lower `SCALE`, because `SCALE` sizes only art:
+distances, speeds, detonation ranges and the whole `calamitas_vfx` particle layer
+are in **world units** driven by `k`, which follows the screen size. Scaling art
+by one factor keeps sprite-to-sprite proportions identical to the game's (they
+all move together) and leaves the fight geometry and arena density untouched. It
+also lands on 1:1 native resolution, so the default state involves no resampling
+at all; the fractional step uses BOX (area average), not NEAREST, which would
+make the pixel art shimmer between frames.
+
+The shield's jaw offsets (`_SHIELD_FWD`, `_JAW_OFF`) carry the same factor so the
+skull stays attached to her body. Setting `SPRITE_SHRINK` back to `1.0` restores
+the old size exactly, sphere included.
+
+## A crash worth knowing about
+
+`VFX._add_scaled` resamples only the visible part of a large unrotated sprite
+(blooms, pulse rings), mapping the on-canvas rect back into the texture with
+PIL's `resize(box=...)`. PIL validates that rectangle, and the `floor`/`ceil`
+rounding left it outside the texture in two ways:
+
+- `box offset can't be negative` — whenever the sprite's left/top edge sat on a
+  fractional pixel *inside* the canvas, `ax0 - x0` landed in `(-1, 0]`. The
+  bullethell pulse rings hit this seconds into that cast.
+- `box can't exceed original image size` — when a sprite was clipped by a canvas
+  edge, `ceil` pushed `ax1 - x0` past the sprite width.
+
+Either one raised `ValueError`, which `draw()` caught and turned into "VFX
+disabled after an error", so the whole layer switched off mid-fight. The box is
+now clamped into the texture. `test_vfx_stamp.py` covers both, plus the property
+that matters for a fix like this: **every draw the old code could render is
+bit-identical to the new output**, so nothing that used to work changed.
 
 
 
@@ -281,7 +389,7 @@ Every asset was verified byte-identical against `CalamityModPublic` branch
 | `assets/shaders/ForcefieldTexture.png` | `NPCs/SupremeCalamitas/ForcefieldTexture.png` | Unmodified |
 | `assets/shaders/reference/CentralGold.png` | `Particles/CentralGold.png` | Unmodified |
 | `assets/shaders/reference/SemiCircularSmearVertical.png` | `Particles/SemiCircularSmearVertical.png` | Unmodified |
-| `assets/vfx/*.png` (7 files) | see below | Staged for future use; not read by any code today. |
+| `assets/vfx/*.png` (9 files) | see below | Five are read at runtime by `calamitas_vfx.py`; four are staged. |
 
 #### Forcefield shader licence
 
@@ -296,24 +404,32 @@ verified for this one.
 shader's radial profile, written from the maths in that file, so it is covered
 by the repository's own licence.
 
-#### `assets/vfx/` — staged particle textures
+#### `assets/vfx/` — particle textures
 
-Seven particle textures kept here for future work (bloom, fire, smoke and star
-trails for the impact effects). **No code reads this folder yet** — the
-brightness pulses on impact are currently drawn procedurally, not textured.
+Five of these are read at runtime by `calamitas_vfx.py`; the other four are
+staged for future work.
 
-| File here | Upstream path |
-| --- | --- |
-| `BloomCircle.png` | `Particles/BloomCircle.png` |
-| `Fire.png` | `Particles/Fire.png` |
-| `Flames.png` | `Particles/Flames.png` |
-| `HollowCircleHardEdge.png` | `Particles/HollowCircleHardEdge.png` |
-| `SmallSmoke.png` | `Particles/SmallSmoke.png` |
-| `StarProj.png` | `Projectiles/StarProj.png` |
-| `StarTrail.png` | `Projectiles/StarTrail.png` |
+| File here | Upstream path | Used by |
+| --- | --- | --- |
+| `BloomCircle.png` | `Particles/BloomCircle.png` | `calamitas_vfx.py` — `Bloom` |
+| `GlowOrbParticle.png` | `Particles/GlowOrbParticle.png` | `calamitas_vfx.py` — `GlowOrb` |
+| `HollowCircleHardEdge.png` | `Particles/HollowCircleHardEdge.png` | `calamitas_vfx.py` — `PulseRing` |
+| `PointParticle.png` | `Particles/PointParticle.png` | `calamitas_vfx.py` — `Point` |
+| `StarProj.png` | `Projectiles/StarProj.png` | `calamitas_vfx.py` — `Spark` |
+| `Fire.png` | `Particles/Fire.png` | staged |
+| `Flames.png` | `Particles/Flames.png` | staged |
+| `SmallSmoke.png` | `Particles/SmallSmoke.png` | staged |
+| `StarTrail.png` | `Projectiles/StarTrail.png` | staged |
 
-All seven are byte-identical to the mod originals and carry the same
+All nine are byte-identical to the mod originals and carry the same
 Calamity Mod copyright as everything else above.
+
+`calamitas_vfx.py` converts each RGBA texture to a per-texel additive intensity
+(`rgb * a`, premultiplied, times `a` again for the `SourceAlpha` blend) at load
+time, so the composite loop is a plain float multiply. If a texture is missing it
+falls back to a related one where there is an obvious stand-in (e.g. missing
+`PointParticle.png` uses `StarProj.png`, since both share their draw code) and
+says so on startup.
 
 ### Re-generating the derived assets
 
@@ -364,8 +480,10 @@ desktop_pet/
   calamitas_pet.py     original pet   (run_pet.bat)
   run_pet.bat          launcher for the original
   calamitas_forcefield.py  SupremeShieldShader.fx ported to numpy (AI version only)
+  calamitas_vfx.py         projectile + casting particles  (AI version only)
   ulw_probe.py         standalone UpdateLayeredWindow diagnostic (see above)
   test_headless.py     simulation tests (no window)
+  test_vfx_stamp.py    VFX stamp/draw regression tests (no window)
   test_present.py      per-frame presentation check
   test_on_screen.py    desktop read-back visibility check
   test_full_run.py     full run + on-screen captures
@@ -374,13 +492,19 @@ desktop_pet/
     sprites/                          projectiles + shield
     sfx/                              WAV conversions of her sounds
     shaders/                          forcefield shader + texture, and reference/
-    vfx/                              particle textures, staged for future use
+    vfx/                              particle textures (5 used by calamitas_vfx.py)
 ```
+
+`calamitas_vfx.py` is optional at runtime: the pet guards the import, so deleting
+it (or setting `VFX_ENABLED = False`) leaves the old procedural bloom disc in
+place and changes nothing else. It only works in the ported-AI version — the
+original pet does not import it.
 
 ## Tests
 
 ```powershell
 python test_headless.py     # 90s of simulation, no window
+python test_vfx_stamp.py    # VFX stamp/draw regression tests (~2 min)
 python test_present.py      # does every frame actually reach the screen?
 python test_on_screen.py    # reads the desktop back; is she really visible?
 python test_full_run.py     # full run with attacks, saves on-screen captures
@@ -391,6 +515,14 @@ premultiplication, partial alpha preserved rather than cut off, no bright halos
 on dim sprites, offscreen no-ops), that every projectile's frames are uniformly
 sized so nothing jitters, that all 7 animations and all 6 attacks occur, that
 every sound fires, and that she both returns to the screen and leaves it.
+
+`test_vfx_stamp.py` covers the VFX drawing path, and is where the sprite-size
+change is guarded too. It asserts that the inputs which used to raise
+`ValueError` now draw; that clipped quads cover their visible part and paint
+nothing outside it; that position, scale and shape match a 4× supersampled render
+of the same quad to sub-pixel accuracy; that a minute of real fight leaves the
+layer enabled; and that every draw the pre-fix code could handle is still
+bit-identical. Runtime is about two minutes.
 
 `test_on_screen.py` and `test_full_run.py` `BitBlt` the **real desktop** back and
 count her pixels. This matters: during development the per-pixel-alpha version
@@ -414,7 +546,9 @@ drew is actually there" is measured rather than assumed.
   `WS_VISIBLE`, and an invisible window shows nothing at all.
 - `UpdateLayeredWindow` wants a DC compatible with the **screen**, not with the
   window, so `present()` passes `GetDC(None)` rather than `GetDC(hwnd)`.
-- `SCALE = 4` near the top controls her size; `FPS = 60` the frame cap.
+- `SCALE = 4` in `calamitas_pet.py` / `SCALE = 2` and `SPRITE_SHRINK = 0.5` in
+  `calamitas_pet_ai.py` control her size; `FPS = 60` the frame cap. See
+  [Sprite size](#sprite-size).
 - Sprites, sounds and shader code belong to Azafure LLC and Re-Logic. Personal,
   non-commercial use only. See the credit notice at the top of this file and the
   [Credits and licensing](#credits-and-licensing) section.
