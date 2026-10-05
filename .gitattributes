@@ -1,0 +1,6 @@
+# Everything else is text, checked out with LF.
+* text=auto eol=lf
+
+# The forcefield shader is committed byte-identical to the Calamity Mod
+# original, which uses LF. Must come after the rule above so it wins.
+assets/shaders/SupremeShieldShader.fx -text

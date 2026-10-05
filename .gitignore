@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Debug output from the test suite
+onscreen_*.png
+pet_debug_frame.png
+
+# The .ogg originals are committed, but the WAVs are byte-reproducible from
+# them with:  ffmpeg -i <name>.ogg -c:a pcm_s16le -ar 44100 -ac 1 <name>.wav
+# Uncomment to keep the repo smaller and regenerate locally.
+# assets/sfx/*.wav
