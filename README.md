@@ -276,7 +276,7 @@ Every asset was verified byte-identical against `CalamityModPublic` branch
 | `assets/sprites/BrimstoneMonster.png` | `Projectiles/Boss/BrimstoneMonster.png` | Unmodified. The Whispering Maelstrom; deliberately unused (see "Deliberately excluded"). |
 | `assets/sfx/*.ogg` (7 files) | `Sounds/Custom/SCalSounds/*.ogg` | Unmodified |
 | `assets/sfx/*.wav` (7 files) | derived from the `.ogg` above | Format conversion only. `ffmpeg -i <name>.ogg -c:a pcm_s16le -ar 44100 -ac 1 <name>.wav`, reproducible and verified identical to what is committed. |
-| `assets/shaders/SupremeShieldShader.fx` | `Effects/SupremeShieldShader.fx` | Unmodified; differs from upstream only in CRLF vs LF line endings. |
+| `assets/shaders/SupremeShieldShader.fx` | `Effects/SupremeShieldShader.fx` | Unmodified apart from line endings: upstream commits CRLF, this copy is LF. Identical after normalising. |
 | `assets/shaders/reference/SupremeShieldShader.xnb` | `Effects/SupremeShieldShader.xnb` | The mod's **compiled** shader, kept as a reference for `calamitas_forcefield.py` to be checked against. Not read at runtime. |
 | `assets/shaders/ForcefieldTexture.png` | `NPCs/SupremeCalamitas/ForcefieldTexture.png` | Unmodified |
 | `assets/shaders/reference/CentralGold.png` | `Particles/CentralGold.png` | Unmodified |
