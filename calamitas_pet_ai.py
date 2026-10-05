@@ -24,7 +24,9 @@ PROVENANCE NOTES (the file carries its own write-up)
 * winsound: CPython rejects SND_MEMORY|SND_ASYNC with RuntimeError; Audio tries it first as the brief
   asks and falls back to a worker thread playing SND_MEMORY synchronously.
 * Colour key: pure green (0,255,0) verified absent from sprites by the brief.
-* Forcefield shader, dust, sparks, bloom textures: no alpha with a colour key -> omitted/approximated.
+* Forcefield shader: ported in calamitas_forcefield.py. Dust, sparks, blooms, pulse rings and afterimages:
+  ported in calamitas_vfx.py now that the window has real per-pixel alpha; see that module's PROVENANCE
+  NOTES for sources, substitutes and gaps. [vfx-patch v1]
 """
 import ctypes
 import io
@@ -41,6 +43,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+# [vfx-patch v1] Projectile + casting VFX (calamitas_vfx.py). Visual only: it reads fight state, never writes it,
+# and uses its own RNG, so attack selection / timings are unchanged.
+try:
+    import calamitas_vfx
+except Exception:  # file missing or broken -> the pet runs exactly as before
+    calamitas_vfx = None
+VFX_ENABLED = True               # False: no VFX, and the old procedural bloom disc comes back
+VFX_SILENCE_STANDIN_DISC = True  # silence _disc() (the flat bloom stand-in) while the BloomParticle port is active
+
 try:
     import winsound
 except ImportError:  # non-Windows (headless tests of blit etc.)
@@ -52,6 +63,7 @@ except ImportError:  # non-Windows (headless tests of blit etc.)
 SRCCOPY = 0x00CC0020        # Win32 raster op, used by the tests to read the desktop back
 SCALE = 2                   # invented -- presentation only
 FPS = 60                    # invented -- presentation only (matches Terraria's 60 UPS)
+
 
 HERE = Path(__file__).resolve().parent
 SPR = HERE / "assets" / "sprites"
@@ -1281,6 +1293,10 @@ class Calamitas:
         self.x += self.vx
         self.y += self.vy
         self._step_bullets()
+        if VFX_ENABLED and calamitas_vfx is not None:   # [vfx-patch v1]
+            if getattr(self, "_vfx", None) is None:
+                self._vfx = calamitas_vfx.VFX(self.k)
+            self._vfx.tick(self)
 
     def _ai(self):
         if self.attack is None:
@@ -1581,8 +1597,13 @@ class Calamitas:
         blit(canvas, img, int(round(self.x - w / 2)), int(round(self.y - h / 2)))
         if self.shield_op > _SHIELD_SOLID and self.shield_top is not None and self.shield_bottom is not None:
             self._draw_shield(canvas)
+        fx = getattr(self, "_vfx", None) if VFX_ENABLED else None   # [vfx-patch v1]
         for b in self.bullets:
             b.draw(canvas)
+            if fx is not None:
+                fx.draw_afterimage(canvas, b, self)
+        if fx is not None:
+            fx.draw(canvas)
 
     def _draw_forcefield(self, canvas):
         """SupremeCalamitas.cs:3669 DrawForcefield.
@@ -1638,6 +1659,17 @@ class Calamitas:
 # ----------------------------------------------------------------------------------------------
 # Entry point
 # ----------------------------------------------------------------------------------------------
+# [vfx-patch v1] The detonation bloom used to be a flat procedural disc (_disc + _BLOOM_R, drawn from
+# Projectile.draw). calamitas_vfx now ports BloomParticle itself (three blooms at timeLeft 30/15/8), so the
+# stand-in is rebound to a no-op here instead of being edited in place. Globals resolve at call time, so this
+# reaches every caller. Set VFX_SILENCE_STANDIN_DISC = False if _disc turns out to draw anything else.
+if VFX_ENABLED and VFX_SILENCE_STANDIN_DISC and calamitas_vfx is not None and "_disc" in globals():
+    _disc_standin = _disc
+
+    def _disc(*_args, **_kwargs):
+        return None
+
+
 def main():
     try:
         win = LayeredWindow()

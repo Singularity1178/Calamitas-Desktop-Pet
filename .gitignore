@@ -6,6 +6,9 @@ __pycache__/
 onscreen_*.png
 pet_debug_frame.png
 
+# One-shot migration backups (e.g. the pre-VFX copy of calamitas_pet_ai.py)
+*.pre_vfx
+
 # The .ogg originals are committed, but the WAVs are byte-reproducible from
 # them with:  ffmpeg -i <name>.ogg -c:a pcm_s16le -ar 44100 -ac 1 <name>.wav
 # Uncomment to keep the repo smaller and regenerate locally.
